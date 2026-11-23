@@ -983,7 +983,7 @@ impl WatchPage {
             return div().py_4().text_sm().text_color(p.text2).child(if w.comments_token.is_none() { "Comments are turned off." } else { "" }).into_any_element();
         };
         let data = match state {
-            Load::Loading => return spinner(cx).into_any_element(),
+            Load::Loading => return comments_skeleton(5, cx),
             Load::Error(e) => return div().py_4().text_sm().text_color(p.text2).child(format!("Could not load comments: {e}")).into_any_element(),
             Load::Ready(c) => c.clone(),
         };
@@ -1086,7 +1086,7 @@ impl WatchPage {
             }
         }
         if data.continuation.is_some() && self.comments_more_loading {
-            col = col.child(spinner(cx));
+            col = col.child(comments_skeleton(3, cx));
         }
         col.into_any_element()
     }
@@ -1258,7 +1258,7 @@ impl WatchPage {
             );
         }
         if self.related_more_loading {
-            col = col.child(spinner(cx));
+            col = col.child(related_skeleton_list(4, cx));
         }
         col.into_any_element()
     }
@@ -1308,11 +1308,15 @@ impl Render for WatchPage {
                 div().flex().flex_col().child(i).child(c).into_any_element()
             }
             (Load::Error(e), _) => div().py_4().text_color(p.text2).child(format!("Could not load video details: {e}")).into_any_element(),
-            _ => spinner(cx).into_any_element(),
+            _ => watch_details_skeleton(cx),
         };
         let queue_panel = self.render_queue_panel(cx);
         let chat_panel = self.render_chat(cx);
-        let related = info.as_ref().map(|w| self.render_related(w, cx));
+        let related = match info.as_ref() {
+            Some(w) => Some(self.render_related(w, cx)),
+            None if matches!(self.info, Load::Loading) => Some(related_skeleton_list(8, cx).into_any_element()),
+            None => None,
+        };
         let secondary = div().flex().flex_col().w(if two_col { side_w } else { avail }).flex_none().children(chat_panel).children(queue_panel).children(related);
         // ambient mode: a soft glow in the picture's colours around the player
         let glow = (!ui.theater && store::settings_snapshot().ambient_mode)

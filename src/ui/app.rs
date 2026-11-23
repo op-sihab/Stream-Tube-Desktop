@@ -825,7 +825,7 @@ impl AppView {
                             div()
                                 .text_xs()
                                 .text_color(p.text3)
-                                .child("Videos you watch in Stream Tube then show in your YouTube history, and your phone and TV resume them where you stopped. The window uses its own empty profile, which is deleted afterwards."),
+                                .child("Videos you watch in OpTube then show in your YouTube history, and your phone and TV resume them where you stopped. The window uses its own empty profile, which is deleted afterwards."),
                         ),
                 )
                 .child(
@@ -1073,7 +1073,7 @@ impl AppView {
             self.history.remove(0);
         }
         self.forward.clear();
-        window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+        window.set_window_title(&format!("{} - OpTube", self.route.title()));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1134,7 +1134,7 @@ impl AppView {
         if cx.global::<UiState>().fullscreen && !matches!(self.route, Route::Watch { .. }) {
             toggle_fullscreen(window, cx);
         }
-        window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+        window.set_window_title(&format!("{} - OpTube", self.route.title()));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1302,7 +1302,7 @@ impl AppView {
                     self.page = build_page(&self.route.clone(), window, cx);
                 }
             }
-            window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+            window.set_window_title(&format!("{} - OpTube", self.route.title()));
             cx.notify();
         }
     }
@@ -1312,7 +1312,7 @@ impl AppView {
             let cur_r = std::mem::replace(&mut self.route, r);
             let cur_p = std::mem::replace(&mut self.page, p);
             self.history.push((cur_r, cur_p));
-            window.set_window_title(&format!("{} - Stream Tube", self.route.title()));
+            window.set_window_title(&format!("{} - OpTube", self.route.title()));
             cx.notify();
         }
     }
@@ -1990,7 +1990,8 @@ impl AppView {
             .items_center()
             .h(px(56.))
             .pl_4()
-            .bg(p.bg)
+            .bg(if p.glass { p.surface } else { p.bg })
+            .when(p.glass, |d| d.border_b_1().border_color(p.border))
             .child(
                 div()
                     .flex()
@@ -2045,7 +2046,7 @@ impl AppView {
                             .rounded_l_full()
                             .border_1()
                             .border_color(p.border)
-                            .bg(if p.dark { rgb(0x121212).into() } else { p.bg })
+                            .bg(if p.glass { p.surface2 } else if p.dark { rgb(0x121212).into() } else { p.bg })
                             .child(Input::new(&self.search).appearance(false).cleanable(true)),
                     )
                     .child(
@@ -2594,7 +2595,7 @@ impl AppView {
                     .child(icon("sparkles").size_3p5().text_color(white()))
                     .child("New version"),
             )
-            .child(div().text_3xl().font_weight(FontWeight::BOLD).text_color(white()).child(format!("Stream Tube {version}")))
+            .child(div().text_3xl().font_weight(FontWeight::BOLD).text_color(white()).child(format!("OpTube {version}")))
             .child(div().text_sm().text_color(hsla(0., 0., 1., 0.85)).child(meta.join("  ·  ")));
 
         let mut body = div().flex().flex_col().gap_4().p_6();
@@ -2652,7 +2653,7 @@ impl AppView {
                                 ),
                         ),
                     )
-                    .child(div().text_xs().text_color(p.text2).child("Stream Tube restarts by itself when it's done.")),
+                    .child(div().text_xs().text_color(p.text2).child("OpTube restarts by itself when it's done.")),
             );
             return div().flex().flex_col().child(hero).child(body).into_any_element();
         }

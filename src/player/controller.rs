@@ -185,7 +185,7 @@ impl Player {
             ("volume-max", "150"),
             ("hr-seek", "yes"),
             ("force-seekable", "yes"),
-            ("audio-client-name", "Stream Tube"),
+            ("audio-client-name", "OpTube"),
             ("sub-font-size", "42"),
             ("sub-border-size", "2.5"),
             ("sub-auto", "no"),
@@ -1021,7 +1021,7 @@ impl Player {
 
     pub fn screenshot(&mut self, cx: &mut Context<Self>) {
         if let Some(m) = &self.mpv {
-            let dir = dirs::picture_dir().unwrap_or_else(std::env::temp_dir).join("Stream Tube");
+            let dir = dirs::picture_dir().unwrap_or_else(std::env::temp_dir).join("OpTube");
             let _ = std::fs::create_dir_all(&dir);
             let name = format!(
                 "{}-{}.png",

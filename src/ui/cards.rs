@@ -123,6 +123,7 @@ pub fn thumbnail(v: &VideoItem, url: String, w: Pixels, h: Pixels, radius: Pixel
         .rounded(radius * (store::settings_snapshot().thumb_radius / 12.0))
         .overflow_hidden()
         .bg(p.surface)
+        .when(p.glass, |d| d.border_1().border_color(p.border))
         .child(img(SharedString::from(url)).size_full().object_fit(ObjectFit::Cover))
         .child(crate::player::preview::slot_marker(&v.id, cx))
         .children(badge(v, cx))
@@ -691,4 +692,274 @@ pub fn grid_columns(avail: Pixels, min_card: f32) -> (usize, Pixels) {
     let cols = if cfg > 0 { cfg } else { (((w + gap) / (min_card + gap)).floor() as usize).clamp(1, 6) };
     let card = (w - gap * (cols as f32 - 1.0)) / cols as f32;
     (cols, px(card.floor() - 1.0))
+}
+
+// ───────────────────────── skeleton loaders (OpTube) ─────────────────────────
+
+/// Animated pulsing skeleton placeholder block matching the active theme (including Green Glass).
+pub fn skeleton_block(id: impl Into<SharedString>, w: Option<Pixels>, h: Pixels, radius: Pixels, cx: &App) -> impl IntoElement {
+    let p = pal(cx);
+    let id: SharedString = id.into();
+    let base = div()
+        .h(h)
+        .rounded(radius)
+        .bg(if p.glass { p.surface2 } else { p.surface })
+        .when(p.glass, |d| d.border_1().border_color(p.border))
+        .when_some(w, |d, width| d.w(width))
+        .when(w.is_none(), |d| d.w_full());
+    base.with_animation(
+        ElementId::Name(id),
+        Animation::new(std::time::Duration::from_millis(1350))
+            .repeat()
+            .with_easing(pulsating_between(0.0, 1.0)),
+        |d, t| d.opacity(0.36 + 0.48 * t),
+    )
+}
+
+fn skeleton_rel_line(id: impl Into<SharedString>, width_pct: f32, h: Pixels, cx: &App) -> impl IntoElement {
+    let p = pal(cx);
+    let id: SharedString = id.into();
+    div()
+        .w(relative(width_pct))
+        .h(h)
+        .rounded(px(6.))
+        .bg(if p.glass { p.surface2 } else { p.surface })
+        .when(p.glass, |d| d.border_1().border_color(p.border))
+        .with_animation(
+            ElementId::Name(id),
+            Animation::new(std::time::Duration::from_millis(1350))
+                .repeat()
+                .with_easing(pulsating_between(0.0, 1.0)),
+            |d, t| d.opacity(0.36 + 0.48 * t),
+        )
+}
+
+/// Home / Subscriptions / Channel video card skeleton matching `video_card` 1:1.
+pub fn video_card_skeleton(idx: usize, width: Pixels, show_channel: bool, cx: &App) -> AnyElement {
+    let h = width * (9. / 16.);
+    let radius = px(12. * (store::settings_snapshot().thumb_radius / 12.0));
+    let show_avatar = show_channel && !store::settings_snapshot().hide_channel_avatars;
+    div()
+        .flex()
+        .flex_col()
+        .w(width)
+        .gap_3()
+        .child(skeleton_block(format!("sk-vc-thumb-{idx}"), Some(width), h, radius, cx))
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .w_full()
+                .when(show_avatar, |d| {
+                    d.child(skeleton_block(format!("sk-vc-av-{idx}"), Some(px(36.)), px(36.), px(18.), cx))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .pt(px(2.))
+                        .child(skeleton_rel_line(format!("sk-vc-t1-{idx}"), 0.92, px(15.), cx))
+                        .child(skeleton_rel_line(format!("sk-vc-t2-{idx}"), 0.68, px(15.), cx))
+                        .when(show_channel, |d| {
+                            d.child(skeleton_rel_line(format!("sk-vc-ch-{idx}"), 0.46, px(12.), cx))
+                        })
+                        .child(skeleton_rel_line(format!("sk-vc-meta-{idx}"), 0.34, px(12.), cx)),
+                ),
+        )
+        .into_any_element()
+}
+
+/// Responsive grid of pulsing video card skeletons.
+pub fn home_skeleton_grid(avail: Pixels, count: usize, show_channel: bool, cx: &App) -> Div {
+    let (_, card_w) = grid_columns(avail, 300.0);
+    let items: Vec<AnyElement> = (0..count).map(|i| video_card_skeleton(i, card_w, show_channel, cx)).collect();
+    grid(items, avail)
+}
+
+/// Search / Playlist horizontal row skeleton matching `video_row` 1:1.
+pub fn video_row_skeleton(idx: usize, thumb_w: Pixels, cx: &App) -> AnyElement {
+    let thumb_h = thumb_w * (9. / 16.);
+    let radius = px(12. * (store::settings_snapshot().thumb_radius / 12.0));
+    div()
+        .flex()
+        .gap_4()
+        .w_full()
+        .child(skeleton_block(format!("sk-vr-thumb-{idx}"), Some(thumb_w), thumb_h, radius, cx))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(10.))
+                .pt_1()
+                .child(skeleton_rel_line(format!("sk-vr-t1-{idx}"), 0.82, px(18.), cx))
+                .child(skeleton_rel_line(format!("sk-vr-t2-{idx}"), 0.56, px(18.), cx))
+                .child(skeleton_rel_line(format!("sk-vr-meta-{idx}"), 0.28, px(12.), cx))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .py_1()
+                        .child(skeleton_block(format!("sk-vr-av-{idx}"), Some(px(24.)), px(24.), px(12.), cx))
+                        .child(skeleton_block(format!("sk-vr-ch-{idx}"), Some(px(140.)), px(12.), px(6.), cx)),
+                )
+                .child(skeleton_rel_line(format!("sk-vr-d1-{idx}"), 0.90, px(12.), cx))
+                .child(skeleton_rel_line(format!("sk-vr-d2-{idx}"), 0.64, px(12.), cx)),
+        )
+        .into_any_element()
+}
+
+/// Vertical stack of row skeletons for Search / Playlist pages.
+pub fn search_skeleton_list(thumb_w: Pixels, count: usize, cx: &App) -> Div {
+    let mut col = div().flex().flex_col().gap_4().w_full();
+    for i in 0..count {
+        col = col.child(video_row_skeleton(i, thumb_w, cx));
+    }
+    col
+}
+
+/// Compact related-video skeleton matching `compact_row` 1:1.
+pub fn compact_row_skeleton(idx: usize, cx: &App) -> AnyElement {
+    let radius = px(8. * (store::settings_snapshot().thumb_radius / 12.0));
+    div()
+        .flex()
+        .gap_2()
+        .w_full()
+        .p_1()
+        .child(skeleton_block(format!("sk-cr-thumb-{idx}"), Some(px(168.)), px(94.), radius, cx))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .pt(px(2.))
+                .child(skeleton_rel_line(format!("sk-cr-t1-{idx}"), 0.92, px(14.), cx))
+                .child(skeleton_rel_line(format!("sk-cr-t2-{idx}"), 0.66, px(14.), cx))
+                .child(skeleton_rel_line(format!("sk-cr-ch-{idx}"), 0.50, px(11.), cx))
+                .child(skeleton_rel_line(format!("sk-cr-meta-{idx}"), 0.38, px(11.), cx)),
+        )
+        .into_any_element()
+}
+
+/// Related videos column skeleton on the Watch page.
+pub fn related_skeleton_list(count: usize, cx: &App) -> Div {
+    let mut col = div().flex().flex_col().gap_2().w_full();
+    for i in 0..count {
+        col = col.child(compact_row_skeleton(i, cx));
+    }
+    col
+}
+
+/// Comment list skeleton for Watch page comments.
+pub fn comments_skeleton(count: usize, cx: &App) -> AnyElement {
+    let mut col = div().flex().flex_col().gap_5().w_full().pt_4();
+    for i in 0..count {
+        col = col.child(
+            div()
+                .flex()
+                .gap_3()
+                .w_full()
+                .child(skeleton_block(format!("sk-cm-av-{i}"), Some(px(40.)), px(40.), px(20.), cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .child(skeleton_block(format!("sk-cm-hd-{i}"), Some(px(160.)), px(12.), px(6.), cx))
+                        .child(skeleton_rel_line(format!("sk-cm-b1-{i}"), 0.90, px(13.), cx))
+                        .child(skeleton_rel_line(format!("sk-cm-b2-{i}"), 0.62, px(13.), cx)),
+                ),
+        );
+    }
+    col.into_any_element()
+}
+
+/// Full Watch page video details skeleton (title, channel/subscribe bar, action pills, description box, comments).
+pub fn watch_details_skeleton(cx: &App) -> AnyElement {
+    let p = pal(cx);
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .w_full()
+        .pt_4()
+        // Video title (2 lines)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(skeleton_rel_line("sk-wd-t1", 0.84, px(22.), cx))
+                .child(skeleton_rel_line("sk-wd-t2", 0.52, px(22.), cx)),
+        )
+        // Channel + Subscribe + Action pills row
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .flex_wrap()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(skeleton_block("sk-wd-av", Some(px(40.)), px(40.), px(20.), cx))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1p5()
+                                .child(skeleton_block("sk-wd-ch", Some(px(140.)), px(15.), px(6.), cx))
+                                .child(skeleton_block("sk-wd-subc", Some(px(92.)), px(12.), px(6.), cx)),
+                        )
+                        .child(skeleton_block("sk-wd-subbtn", Some(px(108.)), px(36.), px(18.), cx)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(skeleton_block("sk-wd-p1", Some(px(124.)), px(36.), px(18.), cx))
+                        .child(skeleton_block("sk-wd-p2", Some(px(86.)), px(36.), px(18.), cx))
+                        .child(skeleton_block("sk-wd-p3", Some(px(86.)), px(36.), px(18.), cx))
+                        .child(skeleton_block("sk-wd-p4", Some(px(102.)), px(36.), px(18.), cx)),
+                ),
+        )
+        // Description card
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_4()
+                .rounded_xl()
+                .bg(p.surface)
+                .when(p.glass, |d| d.border_1().border_color(p.border))
+                .child(skeleton_block("sk-wd-dm", Some(px(220.)), px(13.), px(6.), cx))
+                .child(skeleton_rel_line("sk-wd-d1", 0.96, px(13.), cx))
+                .child(skeleton_rel_line("sk-wd-d2", 0.88, px(13.), cx))
+                .child(skeleton_rel_line("sk-wd-d3", 0.54, px(13.), cx)),
+        )
+        // Comments header + items
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .pt_2()
+                .child(skeleton_block("sk-wd-chd", Some(px(150.)), px(18.), px(6.), cx))
+                .child(comments_skeleton(4, cx)),
+        )
+        .into_any_element()
 }

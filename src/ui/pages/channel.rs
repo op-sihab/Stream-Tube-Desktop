@@ -302,7 +302,7 @@ impl Render for ChannelPage {
         );
         let tab_title = d.tabs.get(self.tab).map(|t| t.title.clone()).unwrap_or_default();
         let body: AnyElement = match &self.tab_items {
-            Load::Loading => spinner(cx).into_any_element(),
+            Load::Loading => home_skeleton_grid(width, 8, false, cx).into_any_element(),
             Load::Error(e) => error_state(e, cx).into_any_element(),
             Load::Ready(items) => {
                 let items: Vec<&Item> = items

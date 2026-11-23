@@ -429,7 +429,7 @@ pub fn open_external_at(id: &str, time: f64, cx: &mut App) {
     cx.spawn(async move |cx| {
         let res = crate::ui::blocking(move || launch_external(&id, time, &custom)).await;
         let _ = cx.update(|cx| match res {
-            Ok(name) => toast(cx, format!("Playing in {name}. Keep Stream Tube open while it plays")),
+            Ok(name) => toast(cx, format!("Playing in {name}. Keep OpTube open while it plays")),
             Err(e) => toast(cx, format!("Couldn't open a video player: {e}")),
         });
     })

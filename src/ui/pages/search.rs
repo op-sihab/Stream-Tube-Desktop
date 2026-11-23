@@ -191,7 +191,7 @@ impl Render for SearchPage {
                 .child(self.filter_group("Sort by", &[("Relevance", 0), ("Upload date", 2), ("View count", 3), ("Rating", 1)], f.sort, |f, v| f.sort = v, cx))
         });
         let body: AnyElement = match &self.items {
-            Load::Loading => spinner(cx).into_any_element(),
+            Load::Loading => search_skeleton_list(thumb_w, 6, cx).into_any_element(),
             Load::Error(e) => error_state(e, cx).into_any_element(),
             Load::Ready(items) => {
                 let mut col = div().flex().flex_col().gap_4();
@@ -223,7 +223,7 @@ impl Render for SearchPage {
                     col = col.child(empty_state("search-x", "No results found", "Try different keywords or remove filters", cx));
                 }
                 if self.loading_more {
-                    col = col.child(spinner(cx));
+                    col = col.child(search_skeleton_list(thumb_w, 3, cx));
                 }
                 col.into_any_element()
             }

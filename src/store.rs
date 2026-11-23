@@ -138,8 +138,8 @@ impl Default for Settings {
             sb.insert(c.to_string(), a.to_string());
         }
         Self {
-            theme: "dark".into(),
-            accent: 0xff0033,
+            theme: "glass".into(),
+            accent: 0x2ba640,
             start_page: "home".into(),
             grid_columns: 0,
             region: "US".into(),
@@ -191,7 +191,7 @@ impl Default for Settings {
             feed_include_shorts: false,
             feed_include_live: true,
             download_dir: dirs::download_dir()
-                .map(|d| d.join("Stream Tube").to_string_lossy().into_owned())
+                .map(|d| d.join("OpTube").to_string_lossy().into_owned())
                 .unwrap_or_default(),
             download_dir_chosen: false,
             download_format: "1080".into(),

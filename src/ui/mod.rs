@@ -16,6 +16,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy)]
 pub struct Pal {
     pub dark: bool,
+    pub glass: bool,
     pub bg: Hsla,
     pub surface: Hsla,
     pub surface2: Hsla,
@@ -36,9 +37,33 @@ impl Global for Pal {}
 
 impl Pal {
     pub fn new(dark: bool, accent: u32) -> Self {
-        if dark {
+        Self::with_mode(dark, false, accent)
+    }
+
+    pub fn with_mode(dark: bool, glass: bool, accent: u32) -> Self {
+        if glass {
+            Self {
+                dark: true,
+                glass: true,
+                bg: rgb(0x07110d).into(),
+                surface: hsla(0.43, 0.34, 0.13, 0.72),
+                surface2: hsla(0.43, 0.32, 0.17, 0.86),
+                hover: hsla(0.42, 0.42, 0.24, 0.78),
+                border: hsla(0.42, 0.58, 0.64, 0.17),
+                text: rgb(0xf0fdf4).into(),
+                text2: rgb(0x9fb8aa).into(),
+                text3: rgb(0x6b8577).into(),
+                accent: rgb(accent).into(),
+                link: rgb(0x34d399).into(),
+                chip: hsla(0.43, 0.30, 0.17, 0.76),
+                chip_active_bg: rgb(accent).into(),
+                chip_active_fg: rgb(0x04120a).into(),
+                overlay: hsla(0.44, 0.40, 0.03, 0.84),
+            }
+        } else if dark {
             Self {
                 dark,
+                glass: false,
                 bg: rgb(0x0f0f0f).into(),
                 surface: rgb(0x212121).into(),
                 surface2: rgb(0x282828).into(),
@@ -57,6 +82,7 @@ impl Pal {
         } else {
             Self {
                 dark,
+                glass: false,
                 bg: rgb(0xffffff).into(),
                 surface: rgb(0xf2f2f2).into(),
                 surface2: rgb(0xffffff).into(),
@@ -82,12 +108,16 @@ pub fn pal(cx: &App) -> Pal {
 
 pub fn apply_theme(window: Option<&mut Window>, cx: &mut App) {
     let s = crate::store::settings_snapshot();
-    let dark = match s.theme.as_str() {
-        "light" => false,
-        "system" => window.as_ref().map(|w| matches!(w.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark)).unwrap_or(true),
-        _ => true,
+    let (dark, glass) = match s.theme.as_str() {
+        "light" => (false, false),
+        "dark" => (true, false),
+        "system" => (
+            window.as_ref().map(|w| matches!(w.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark)).unwrap_or(true),
+            false,
+        ),
+        _ => (true, true),
     };
-    let p = Pal::new(dark, s.accent);
+    let p = Pal::with_mode(dark, glass, s.accent);
     cx.set_global(p);
     gpui_kit::component::Theme::change(
         if dark { gpui_kit::component::ThemeMode::Dark } else { gpui_kit::component::ThemeMode::Light },
@@ -252,6 +282,7 @@ pub fn pill(id: impl Into<ElementId>, icon_name: Option<&str>, label: impl Into<
         .px_4()
         .rounded_full()
         .bg(p.chip)
+        .when(p.glass, |d| d.border_1().border_color(p.border))
         .cursor_pointer()
         .text_sm()
         .font_weight(FontWeight::MEDIUM)
@@ -272,6 +303,7 @@ pub fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>, active: bo
         .text_sm()
         .font_weight(FontWeight::MEDIUM)
         .cursor_pointer()
+        .when(p.glass && !active, |d| d.border_1().border_color(p.border))
         .when(active, |d| d.bg(p.chip_active_bg).text_color(p.chip_active_fg))
         .when(!active, move |d| d.bg(p.chip).text_color(p.text).hover(move |s| s.bg(p.hover)))
         .child(label.into())
@@ -399,15 +431,15 @@ pub fn logo(size: Pixels) -> Img {
     img(SharedString::from(format!("brand/logo-{accent:06x}.svg"))).size(size).flex_none()
 }
 
-/// "Stream Tube" wordmark next to the logo.
+/// "OpTube" wordmark next to the logo.
 pub fn wordmark(cx: &App) -> Div {
     let p = pal(cx);
     div()
         .flex()
         .items_baseline()
-        .gap(px(5.))
+        .gap(px(1.))
         .text_lg()
         .font_weight(FontWeight::BOLD)
-        .child(div().text_color(p.text).child("Stream"))
+        .child(div().text_color(p.text).child("Op"))
         .child(div().text_color(p.accent).child("Tube"))
 }

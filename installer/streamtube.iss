@@ -5,7 +5,7 @@
 #ifndef AppVersion
   #define AppVersion "0.6.0-alpha"
 #endif
-#define AppName "Stream Tube"
+#define AppName "OpTube"
 #define AppExe "streamtube.exe"
 #define Root ".."
 

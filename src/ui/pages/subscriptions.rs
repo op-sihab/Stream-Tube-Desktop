@@ -204,7 +204,7 @@ impl Render for FeedPage {
             .collect();
         let total_vids = vids.len();
         let body: AnyElement = if vids.is_empty() && self.refreshing {
-            spinner(cx).into_any_element()
+            home_skeleton_grid(width, 12, true, cx).into_any_element()
         } else if vids.is_empty() {
             empty_state("inbox", "No videos", "", cx).into_any_element()
         } else if kind == Kind::Shorts {

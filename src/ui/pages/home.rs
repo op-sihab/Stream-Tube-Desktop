@@ -284,7 +284,7 @@ impl Render for HomePage {
         maybe_load_more(&self.scroll, &mut self.loading_more, has_more, cx, |this, cx| this.load_more(cx));
         let width = content_width(cx);
         let (_, card_w) = grid_columns(width, 300.0);
-        let mut chips = div().flex().gap_3().py_3().px_6().bg(p.bg).child(
+        let mut chips = div().flex().gap_3().py_3().px_6().bg(if p.glass { p.surface } else { p.bg }).when(p.glass, |d| d.border_b_1().border_color(p.border)).child(
             chip(
                 "chip-all",
                 if crate::api::auth::signed_in() || crate::api::web::connected() || !store::subscriptions().is_empty() {
@@ -313,7 +313,7 @@ impl Render for HomePage {
             }
         }
         let body: AnyElement = match &self.items {
-            Load::Loading => spinner(cx).into_any_element(),
+            Load::Loading => home_skeleton_grid(width, 12, true, cx).into_any_element(),
             Load::Error(e) => error_state(e, cx).into_any_element(),
             Load::Ready(items) => {
                 let items: Vec<Item> = items
@@ -346,7 +346,7 @@ impl Render for HomePage {
                     }
                     col = col.child(grid(cards.collect(), width));
                     if self.loading_more {
-                        col = col.child(spinner(cx));
+                        col = col.child(home_skeleton_grid(width, 4, true, cx));
                     }
                     col.into_any_element()
                 }

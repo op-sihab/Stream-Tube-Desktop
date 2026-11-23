@@ -83,13 +83,13 @@ fn main() {
             perf::mark("gpui_kit init");
             player::preview::init(cx);
             perf::mark("preview init");
-            cx.set_global(ui::Pal::new(true, store::settings_snapshot().accent));
+            cx.set_global(ui::Pal::with_mode(true, true, store::settings_snapshot().accent));
             ui::apply_theme(None, cx);
             player::controller::init(cx);
             perf::mark("player init");
             let opts = WindowOptions {
                 window_bounds: Some(saved_window_bounds(cx)),
-                titlebar: Some(TitlebarOptions { title: Some("Stream Tube".into()), appears_transparent: true, ..Default::default() }),
+                titlebar: Some(TitlebarOptions { title: Some("OpTube".into()), appears_transparent: true, ..Default::default() }),
                 window_min_size: Some(size(px(720.), px(480.))),
                 ..Default::default()
             };

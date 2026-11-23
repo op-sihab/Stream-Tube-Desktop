@@ -300,7 +300,7 @@ impl Render for PlaylistPage {
             .when_some(self.description.clone().filter(|d| !d.is_empty()), |d, desc| d.child(div().text_xs().text_color(p.text2).child(desc)));
 
         let list: AnyElement = match &self.videos {
-            Load::Loading => spinner(cx).into_any_element(),
+            Load::Loading => search_skeleton_list(px(168.), 6, cx).into_any_element(),
             Load::Error(e) => error_state(e, cx).into_any_element(),
             Load::Ready(v) if v.is_empty() => empty_state("list-video", "No videos in this playlist yet", "", cx).into_any_element(),
             Load::Ready(_) => {

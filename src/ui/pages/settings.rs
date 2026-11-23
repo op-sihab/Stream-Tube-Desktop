@@ -507,7 +507,7 @@ impl SettingsPage {
                     div()
                         .text_sm()
                         .text_color(p.text)
-                        .child("These are built into Stream Tube, so they work without YouTube Premium and without signing in."),
+                        .child("These are built into OpTube, so they work without YouTube Premium and without signing in."),
                 )
         });
         card(cx)
@@ -566,7 +566,7 @@ impl SettingsPage {
                 };
                 row("YouTube watch history", &desc, ctl, cx)
             })
-            .child(row("Theme", "", self.choice("theme", &[("dark".to_string(), "Dark"), ("light".to_string(), "Light"), ("system".to_string(), "System")], s.theme.clone(), |s, v| s.theme = v, cx), cx))
+            .child(row("Theme", "", self.choice("theme", &[("glass".to_string(), "Green Glass"), ("dark".to_string(), "Dark"), ("light".to_string(), "Light"), ("system".to_string(), "System")], s.theme.clone(), |s, v| s.theme = v, cx), cx))
             .child(row("Accent color", "Switches, highlights, progress and the seek bar", accent_swatches(s.accent, cx), cx))
             .child(row("Start page", "", self.choice("start", &[("home".to_string(), "Home"), ("subscriptions".to_string(), "Subscriptions"), ("history".to_string(), "History")], s.start_page.clone(), |s, v| s.start_page = v, cx), cx))
             .child(row("Interface size", "", self.choice("scale", &[(0.9f32, "90%"), (1.0, "100%"), (1.1, "110%"), (1.25, "125%")], s.ui_scale, |s, v| s.ui_scale = v, cx), cx))
@@ -912,7 +912,7 @@ impl SettingsPage {
         card(cx)
             .child(row(
                 "Playback client",
-                "Which YouTube app Stream Tube presents itself as to get video streams. Try another one if videos stop playing or fail to load.",
+                "Which YouTube app OpTube presents itself as to get video streams. Try another one if videos stop playing or fail to load.",
                 self.choice(
                     "sb2",
                     &[
@@ -986,7 +986,7 @@ impl SettingsPage {
                 "yt-dlp",
                 &match &self.ytdlp_version {
                     Some(v) => format!("Installed ({v}). Downloads in every quality, with SponsorBlock chapters"),
-                    None => "Needed for downloads above 360p. Stream Tube can fetch it for you".into(),
+                    None => "Needed for downloads above 360p. OpTube can fetch it for you".into(),
                 },
                 if self.ytdlp_version.is_some() {
                     div().into_any_element()
@@ -1001,7 +1001,7 @@ impl SettingsPage {
                 "FFmpeg",
                 match self.ffmpeg_found {
                     Some(true) => "Installed. Joins the video and audio of downloads above 360p",
-                    Some(false) => "Needed to join video and audio above 360p. Stream Tube can fetch it for you",
+                    Some(false) => "Needed to join video and audio above 360p. OpTube can fetch it for you",
                     None => "",
                 },
                 if self.ffmpeg_found == Some(false) {
@@ -1029,7 +1029,7 @@ impl SettingsPage {
                 card(cx)
                     .child(row(
                         "Import",
-                        "Takeout, NewPipe, FreeTube, OPML or Stream Tube backup",
+                        "Takeout, NewPipe, FreeTube, OPML or OpTube backup",
                         pill("imp", Some("upload"), "Choose file…", cx).on_click(|_, _, cx| {
                             let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Import".into()) });
                             cx.spawn(async move |cx| {
@@ -1051,7 +1051,7 @@ impl SettingsPage {
                         }),
                         cx,
                     ))
-                    .child(row("Export full backup", "", export_button("exp-all", "streamtube-backup.json", ExportKind::Backup, cx), cx))
+                    .child(row("Export full backup", "", export_button("exp-all", "optube-backup.json", ExportKind::Backup, cx), cx))
                     .child(row("Export subscriptions (NewPipe JSON)", "", export_button("exp-np", "subscriptions.json", ExportKind::Subs, cx), cx))
                     .child(row("Export subscriptions (YouTube CSV)", "", export_button("exp-csv", "subscriptions.csv", ExportKind::Subs, cx), cx))
                     .child(row("Export subscriptions (OPML)", "For RSS readers", export_button("exp-opml", "subscriptions.opml", ExportKind::Subs, cx), cx)),
@@ -1062,7 +1062,7 @@ impl SettingsPage {
         let s = store::settings_snapshot();
         let mpv = crate::player::mpv::available();
         card(cx)
-            .child(row("Stream Tube", &format!("Version {}", env!("CARGO_PKG_VERSION")), div(), cx))
+            .child(row("OpTube", &format!("Version {}", env!("CARGO_PKG_VERSION")), div(), cx))
             .child(row("Video engine", if mpv { "libmpv" } else if cfg!(windows) { "libmpv-2.dll not found" } else { "libmpv not found (install the libmpv package)" }, div(), cx))
             .child(row("yt-dlp", self.ytdlp_version.as_deref().unwrap_or("not installed"), div(), cx))
             .child({

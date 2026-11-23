@@ -3,7 +3,7 @@
   <id>io.github.avaneesh_inamdar.StreamTube</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
-  <name>Stream Tube</name>
+  <name>OpTube</name>
   <summary>A fast native YouTube client without ads</summary>
   <description>
     <p>
