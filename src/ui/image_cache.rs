@@ -134,12 +134,10 @@ fn animated(bytes: &[u8]) -> Option<smallvec::SmallVec<[image::Frame; 1]>> {
             .into_iter()
             .step_by(step)
             .map(|f| {
-                let delay = if step == 1 {
-                    f.delay()
-                } else {
-                    let (n, d) = f.delay().numer_denom_ms();
-                    image::Delay::from_numer_denom_ms(n * step as u32, d)
-                };
+                // a frame time of 0-10 ms means "default" in GIFs; browsers show those for 100 ms
+                let (n, d) = f.delay().numer_denom_ms();
+                let (n, d) = if d == 0 || n as f32 / (d as f32) <= 10.0 { (100, 1) } else { (n, d) };
+                let delay = image::Delay::from_numer_denom_ms(n * step as u32, d);
                 let buf = f.into_buffer();
                 let (w, h) = buf.dimensions();
                 let mut buf = if k < 1.0 {

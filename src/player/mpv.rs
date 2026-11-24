@@ -82,6 +82,8 @@ struct Fns {
 fn lib() -> Result<&'static (Library, Fns)> {
     static LIB: std::sync::OnceLock<Result<(Library, Fns), String>> = std::sync::OnceLock::new();
     LIB.get_or_init(|| unsafe {
+        #[cfg(windows)]
+        preload_vulkan_loader();
         let mut candidates: Vec<std::path::PathBuf> = Vec::new();
         if let Ok(exe) = std::env::current_exe() {
             if let Some(d) = exe.parent() {
@@ -107,6 +109,9 @@ fn lib() -> Result<&'static (Library, Fns)> {
         candidates.push("libmpv.so".into());
         candidates.push("libmpv.2.dylib".into());
         let mut last_err = String::from("libmpv not found");
+        // the error from a copy that is there but won't load says more than
+        // "not found" from the names tried after it
+        let mut first_real_err: Option<String> = None;
         for c in candidates {
             match Library::new(&c) {
                 Ok(l) => {
@@ -138,13 +143,50 @@ fn lib() -> Result<&'static (Library, Fns)> {
                     };
                     return Ok((l, fns));
                 }
-                Err(e) => last_err = format!("{}: {e}", c.display()),
+                Err(e) => {
+                    last_err = format!("{}: {e}", c.display());
+                    if first_real_err.is_none() && c.is_absolute() && c.is_file() {
+                        first_real_err = Some(last_err.clone());
+                    }
+                }
             }
         }
-        Err(last_err)
+        Err(first_real_err.unwrap_or(last_err))
     })
     .as_ref()
     .map_err(|e| anyhow!("{e}"))
+}
+
+/// libmpv-2.dll links against vulkan-1.dll, which Windows only has when the GPU
+/// driver installed it (not with older Intel graphics such as HD 4000, or in
+/// some VMs). Without it libmpv fails to load at all, even though playback here
+/// never uses Vulkan. The app ships the Khronos loader in a sub-folder and loads
+/// it only when the system has none; once a module named vulkan-1.dll is loaded,
+/// Windows uses it to satisfy libmpv's import.
+#[cfg(windows)]
+unsafe fn preload_vulkan_loader() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // system copy (System32), never one from the current directory
+    let sys = std::env::var_os("SystemRoot")
+        .map(|r| std::path::PathBuf::from(r).join("System32").join("vulkan-1.dll"))
+        .filter(|p| p.is_file());
+    if sys.is_some() {
+        return;
+    }
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) else { return };
+    for p in [dir.join("vulkan").join("vulkan-1.dll"), std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/third_party/vulkan/vulkan-1.dll"))] {
+        if p.is_file() {
+            if let Ok(l) = unsafe { Library::new(&p) } {
+                // stays loaded for the life of the process
+                std::mem::forget(l);
+                return;
+            }
+        }
+    }
 }
 
 pub fn available() -> bool {

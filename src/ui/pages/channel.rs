@@ -18,6 +18,8 @@ pub struct ChannelPage {
     search: Entity<InputState>,
     searching: Option<String>,
     serial: u64,
+    /// the channel description is shown in full
+    about_open: bool,
     _sub: Subscription,
 }
 
@@ -52,6 +54,7 @@ impl ChannelPage {
             search,
             searching: None,
             serial: 0,
+            about_open: false,
             _sub: sub,
         };
         s.load(cx);
@@ -227,8 +230,38 @@ impl Render for ChannelPage {
                                         .join(" • "),
                                 ),
                             )
-                            .when_some(d.info.description.clone().filter(|x| !x.is_empty()), |el, desc| {
-                                el.child(div().text_sm().text_color(p.text2).line_clamp(2).max_w(px(700.)).child(desc))
+                            .when_some(d.info.description.clone().filter(|x| !x.trim().is_empty()), |el, desc| {
+                                // two lines unless opened: some channels write pages here
+                                let short = clamp_text(desc.trim(), 2, 180);
+                                let long = short.is_some();
+                                let open = self.about_open;
+                                el.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .max_w(px(700.))
+                                        .child(div().text_sm().text_color(p.text2).child(if open || !long {
+                                            rich_text("ch-about", desc.trim().to_string(), cx)
+                                        } else {
+                                            div().child(short.unwrap_or_default()).into_any_element()
+                                        }))
+                                        .when(long, |d| {
+                                            d.child(
+                                                div()
+                                                    .id("ch-about-more")
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(p.text)
+                                                    .cursor_pointer()
+                                                    .child(if open { "Show less" } else { "Show more" })
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.about_open ^= true;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                        }),
+                                )
                             })
                             .child(
                                 div()

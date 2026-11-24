@@ -211,6 +211,11 @@ impl Render for PlayerView {
                     this.press = None;
                     this.player.update(cx, |p, _| p.end_boost());
                 }
+                // a seek or volume drag whose release we missed (something under
+                // the pointer kept it) ends here, where the button was last held
+                if (this.drag_seek.is_some() || this.drag_vol) && ev.pressed_button != Some(MouseButton::Left) {
+                    this.finish_drag(cx);
+                }
                 if let Some(_) = this.drag_seek {
                     let f = Self::frac_in(this.seek_bounds.get(), ev.position.x);
                     this.drag_seek = Some(f);
@@ -246,29 +251,11 @@ impl Render for PlayerView {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    if let Some(f) = this.drag_seek.take() {
-                        this.player.update(cx, |p, _| {
-                            let d = p.duration;
-                            p.seek_to(f as f64 * d)
-                        });
-                    }
-                    this.drag_vol = false;
-                    cx.notify();
-                }),
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    if let Some(f) = this.drag_seek.take() {
-                        this.player.update(cx, |p, _| {
-                            let d = p.duration;
-                            p.seek_to(f as f64 * d)
-                        });
-                    }
-                    this.drag_vol = false;
-                    cx.notify();
-                }),
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
             )
             .child(surface);
 
@@ -1047,15 +1034,26 @@ impl PlayerView {
             .when_some(chapter_title.filter(|_| !narrow && !store::settings_snapshot().hide_chapters), |d, c| {
                 d.child(
                     div()
+                        .id("c-chapter")
                         .flex()
                         .items_center()
                         .gap_1()
                         .ml_3()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hsla(0., 0., 1., 0.15)))
                         .text_sm()
                         .text_color(white())
                         .child("•")
                         .child(div().max_w(px(260.)).truncate().child(c))
-                        .child(icon("chevron-right").size_4().text_color(white())),
+                        .child(icon("chevron-right").size_4().text_color(white()))
+                        // opens the chapter list beside the player
+                        .on_click(|_, _, cx| {
+                            cx.stop_propagation();
+                            crate::ui::pages::watch::toggle_chapters(cx);
+                        }),
                 )
             });
 
@@ -1164,7 +1162,12 @@ impl PlayerView {
                 div()
                     .id("seek-wrap")
                     .py_2()
-                    .on_click(|_, _, cx| cx.stop_propagation())
+                    // the click is the bar's release; it's kept from the pause layer,
+                    // so the seek it ends is finished here
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.finish_drag(cx);
+                    }))
                     .child(bar),
             )
             .child(
@@ -1182,6 +1185,18 @@ impl PlayerView {
                     .child(left)
                     .child(right),
             )
+    }
+
+    /// Ends a seek-bar or volume drag: seeks to where the bar was let go.
+    fn finish_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some(f) = self.drag_seek.take() {
+            self.player.update(cx, |p, _| {
+                let d = p.duration;
+                p.seek_to(f as f64 * d)
+            });
+        }
+        self.drag_vol = false;
+        cx.notify();
     }
 
     /// The "Stats for nerds" panel; refreshes itself every second while open.
@@ -1405,7 +1420,7 @@ impl PlayerView {
                         row(SharedString::from(format!("q-{q}")), None, format!("{q}p{}", if q >= 2160 { " 4K" } else if q >= 720 { " HD" } else { "" }), None, q == cur)
                             .on_click(cx.listener(move |t, _, _, cx| {
                                 t.menu = None;
-                                store::update_settings(|s| s.default_quality = q);
+                                // set_quality keeps it as the default only when "Remember last quality" is on
                                 t.player.update(cx, |p, cx| p.set_quality(q, cx));
                             })),
                     );

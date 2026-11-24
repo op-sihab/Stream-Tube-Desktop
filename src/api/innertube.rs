@@ -155,8 +155,20 @@ pub(crate) fn parse_tile(t: &Value) -> Option<VideoItem> {
         find_all(t, "browseEndpoint", &mut eps);
         channel_id = eps.iter().filter_map(|b| b.get("browseId").and_then(Value::as_str)).find(|b| b.starts_with("UC")).map(str::to_string);
     }
-    let views = parts.iter().find(|p| p.to_lowercase().contains("view") || p.to_lowercase().contains("watching")).cloned();
-    let published = parts.iter().find(|p| p.to_lowercase().contains("ago") || p.to_lowercase().contains("streamed")).cloned();
+    // in any language: the date is the part that reads as a relative time, the
+    // views the other part that starts with a number, and the channel comes first
+    let published = parts
+        .iter()
+        .find(|p| p.to_lowercase().contains("ago") || p.to_lowercase().contains("streamed"))
+        .or_else(|| parts.iter().find(|p| crate::api::json::parse_relative_time(p).is_some()))
+        .cloned();
+    let views = parts
+        .iter()
+        .find(|p| p.to_lowercase().contains("view") || p.to_lowercase().contains("watching"))
+        .or_else(|| {
+            parts.iter().skip(1).find(|p| Some(*p) != published.as_ref() && p.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        })
+        .cloned();
     let channel_name = parts.iter().find(|p| Some(*p) != views.as_ref() && Some(*p) != published.as_ref()).cloned().unwrap_or_default();
     let duration_secs = badge.as_deref().and_then(parse_duration);
     Some(VideoItem {
@@ -364,11 +376,16 @@ fn parse_lockup(l: &Value) -> Option<Item> {
             let is_live = badge_texts.iter().any(|b| b.eq_ignore_ascii_case("live"));
             let is_upcoming = badge_texts.iter().any(|b| b.eq_ignore_ascii_case("upcoming"));
             let duration_text = badge_texts.iter().find(|b| parse_duration(b).is_some()).cloned();
-            let views = views.or_else(|| {
-                // compact form "1B" with PLAY_ARROW icon has no "views" word; pick a numeric-ish part
-                others.iter().find(|o| o.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)).cloned()
-            });
             let published = published.or_else(|| others.iter().find(|o| parse_relative_time(o).is_some()).cloned());
+            let views = views.or_else(|| {
+                // compact form "1B" with PLAY_ARROW icon, or another language: no "views" word;
+                // pick the numeric-ish part that isn't the date or the channel
+                others
+                    .iter()
+                    .filter(|o| Some(*o) != published.as_ref() && Some(*o) != channel_name.as_ref())
+                    .find(|o| o.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
+                    .cloned()
+            });
             let views = views.map(|v| {
                 if v.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',' || "KMB".contains(c)) {
                     format!("{v} views")

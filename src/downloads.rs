@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum JobStatus {
@@ -720,7 +720,60 @@ pub const YTDLP_SIZE: &str = if cfg!(windows) { "24 MB" } else { "41 MB" };
 
 /// Downloads a file from a GitHub release into `dest`, and keeps it only if it
 /// matches the SHA-256 GitHub lists for it. `release` is "latest" or "tags/<tag>".
+/// How far the FFmpeg / yt-dlp download has got: idle, a percentage, or unpacking.
+static FFMPEG_PCT: AtomicU32 = AtomicU32::new(IDLE);
+static YTDLP_PCT: AtomicU32 = AtomicU32::new(IDLE);
+const IDLE: u32 = u32::MAX;
+const UNPACKING: u32 = 1000;
+/// bumped each time a tool download finishes, so pages showing whether it's
+/// installed look again without being reopened
+static TOOLS_GEN: AtomicU64 = AtomicU64::new(0);
+
+pub enum ToolFetch {
+    Downloading(u32),
+    Unpacking,
+}
+
+fn fetch_state(a: &AtomicU32) -> Option<ToolFetch> {
+    match a.load(Ordering::SeqCst) {
+        IDLE => None,
+        UNPACKING => Some(ToolFetch::Unpacking),
+        n => Some(ToolFetch::Downloading(n.min(100))),
+    }
+}
+
+pub fn ffmpeg_fetch() -> Option<ToolFetch> {
+    fetch_state(&FFMPEG_PCT)
+}
+
+pub fn ytdlp_fetch() -> Option<ToolFetch> {
+    fetch_state(&YTDLP_PCT)
+}
+
+pub fn tools_generation() -> u64 {
+    TOOLS_GEN.load(Ordering::SeqCst)
+}
+
+/// Repaints while a tool downloads, so its progress moves on screen.
+fn repaint_while(flag: &'static AtomicBool, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        while flag.load(Ordering::SeqCst) {
+            cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+            let _ = cx.update(|cx| cx.refresh_windows());
+        }
+    })
+    .detach();
+}
+
 fn download_github_asset((repo, release, name): (&str, &str, &str), dest: &std::path::Path) -> anyhow::Result<()> {
+    download_github_asset_progress((repo, release, name), dest, None)
+}
+
+fn download_github_asset_progress(
+    (repo, release, name): (&str, &str, &str),
+    dest: &std::path::Path,
+    pct: Option<&AtomicU32>,
+) -> anyhow::Result<()> {
     let rel = crate::api::http::get_json(&format!("https://api.github.com/repos/{repo}/releases/{release}"))?;
     let asset = rel
         .get("assets")
@@ -732,7 +785,13 @@ fn download_github_asset((repo, release, name): (&str, &str, &str), dest: &std::
     let (Some(url), Some(sha)) = (url, sha) else { anyhow::bail!("GitHub gave no checksum for {name}") };
     {
         let mut f = std::fs::File::create(dest)?;
-        crate::api::http::download_to(url, &mut f, |_, _| true)?;
+        let size = asset.get("size").and_then(|s| s.as_u64());
+        crate::api::http::download_to(url, &mut f, |done, total| {
+            if let (Some(p), Some(t)) = (pct, total.or(size).filter(|t| *t > 0)) {
+                p.store(((done * 100) / t).min(100) as u32, Ordering::SeqCst);
+            }
+            true
+        })?;
     }
     if crate::updater::file_sha256(dest)? != sha {
         let _ = std::fs::remove_file(dest);
@@ -771,7 +830,9 @@ pub fn fetch_ffmpeg(cx: &mut App) {
     if FFMPEG_FETCHING.swap(true, Ordering::SeqCst) {
         return;
     }
+    FFMPEG_PCT.store(0, Ordering::SeqCst);
     toast(cx, "Downloading FFmpeg…");
+    repaint_while(&FFMPEG_FETCHING, cx);
     cx.spawn(async move |cx| {
         let res = crate::ui::blocking(|| -> anyhow::Result<()> {
             let dir = ffmpeg_dir();
@@ -779,7 +840,8 @@ pub fn fetch_ffmpeg(cx: &mut App) {
             let _ = std::fs::remove_dir_all(&tmp);
             std::fs::create_dir_all(&tmp)?;
             let archive = tmp.join(FFMPEG_ASSET.2);
-            download_github_asset(FFMPEG_ASSET, &archive)?;
+            download_github_asset_progress(FFMPEG_ASSET, &archive, Some(&FFMPEG_PCT))?;
+            FFMPEG_PCT.store(UNPACKING, Ordering::SeqCst);
             // Windows 10+ ships bsdtar, which reads zip files; GNU tar unpacks .tar.xz
             let mut c = Command::new("tar");
             c.arg(if cfg!(windows) { "-xf" } else { "-xJf" }).arg(&archive).arg("-C").arg(&tmp);
@@ -813,7 +875,10 @@ pub fn fetch_ffmpeg(cx: &mut App) {
         })
         .await;
         FFMPEG_FETCHING.store(false, Ordering::SeqCst);
+        FFMPEG_PCT.store(IDLE, Ordering::SeqCst);
+        TOOLS_GEN.fetch_add(1, Ordering::SeqCst);
         let _ = cx.update(|cx| {
+            cx.refresh_windows();
             let pending: Vec<_> = std::mem::take(&mut *PENDING.lock());
             match res {
                 Ok(()) => {
@@ -840,13 +905,15 @@ pub fn fetch_ytdlp(cx: &mut App) {
     if YTDLP_FETCHING.swap(true, Ordering::SeqCst) {
         return;
     }
+    YTDLP_PCT.store(0, Ordering::SeqCst);
     toast(cx, "Downloading yt-dlp…");
+    repaint_while(&YTDLP_FETCHING, cx);
     cx.spawn(async move |cx| {
         let res = crate::ui::blocking(|| -> anyhow::Result<()> {
             let name = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
             let dest = store::data_dir().join(name);
             let tmp = store::data_dir().join(format!("{name}.part"));
-            download_github_asset(YTDLP_ASSET, &tmp)?;
+            download_github_asset_progress(YTDLP_ASSET, &tmp, Some(&YTDLP_PCT))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -862,7 +929,10 @@ pub fn fetch_ytdlp(cx: &mut App) {
         })
         .await;
         YTDLP_FETCHING.store(false, Ordering::SeqCst);
+        YTDLP_PCT.store(IDLE, Ordering::SeqCst);
+        TOOLS_GEN.fetch_add(1, Ordering::SeqCst);
         let _ = cx.update(|cx| {
+            cx.refresh_windows();
             let pending: Vec<_> = std::mem::take(&mut *PENDING.lock());
             match res {
                 Ok(()) => {

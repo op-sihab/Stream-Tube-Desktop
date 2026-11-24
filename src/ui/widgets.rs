@@ -166,11 +166,20 @@ fn smooth_scroll(id: &'static str, handle: ScrollHandle) -> impl IntoElement {
     .size_0()
 }
 
-/// True when the scroll position is within `margin` of the bottom.
+/// A scroll area inside a page (queue, chat, chapters). gpui hands a wheel event
+/// to every scroll area under the pointer, so without this the page scrolls
+/// along with (or instead of) the list the pointer is over.
+pub fn nested_scroll(id: impl Into<ElementId>, list: impl IntoElement) -> Stateful<Div> {
+    div().id(id).on_scroll(|_, _, cx| cx.stop_propagation()).child(list)
+}
+
+/// True when the scroll position is within `margin` of the bottom, or when the
+/// page is laid out but its content doesn't fill it (nothing to scroll yet).
 pub fn near_bottom(handle: &ScrollHandle, margin: f32) -> bool {
     let off: f32 = (-handle.offset().y).into();
     let max: f32 = handle.max_offset().y.into();
-    max > 0.0 && off >= max - margin
+    let laid_out = handle.bounds().size.height > px(0.);
+    (max > 0.0 && off >= max - margin) || (laid_out && max <= 0.0)
 }
 
 pub fn content_width(cx: &App) -> Pixels {
@@ -312,6 +321,8 @@ fn open_link(url: &str, window: &mut Window, cx: &mut App) {
             p.set_paused(false);
             cx.notify();
         });
+        // back up to the player, like YouTube does
+        scroll_page_key("home", false, window);
     } else if let Some(h) = url.strip_prefix("st-tag:") {
         crate::ui::app::navigate(crate::ui::app::Route::Search(crate::api::http::urldecode(h)), window, cx);
     } else if let Some(h) = url.strip_prefix("st-handle:") {
@@ -387,21 +398,93 @@ pub fn rich_text_with(id: impl Into<ElementId>, text: String, emojis: &[(String,
         .into_any_element()
 }
 
+thread_local! {
+    /// long comments the user opened with "Read more"
+    static OPEN_COMMENTS: std::cell::RefCell<std::collections::HashSet<SharedString>> = Default::default();
+}
+
+const CLAMP_LINES: usize = 5;
+const CLAMP_CHARS: usize = 400;
+
+/// The start of a long text (whole lines, then cut at a word), or None when it's short.
+pub(crate) fn clamp_text(text: &str, max_lines: usize, max_chars: usize) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = lines.iter().take(max_lines).copied().collect::<Vec<_>>().join("
+");
+    let mut cut = lines.len() > max_lines;
+    if out.chars().count() > max_chars {
+        let end = out.char_indices().nth(max_chars).map(|(i, _)| i).unwrap_or(out.len());
+        let end = out[..end].rfind(char::is_whitespace).filter(|&i| i > end / 2).unwrap_or(end);
+        out.truncate(end);
+        cut = true;
+    }
+    cut.then(|| format!("{}…", out.trim_end()))
+}
+
 /// A comment's text (with channel emojis) and the GIF or sticker posted with it.
+/// Long ones are cut to a few lines with "Read more".
 pub fn comment_body(id: impl Into<SharedString>, c: &crate::api::types::Comment, cx: &App) -> AnyElement {
     let id: SharedString = id.into();
+    let p = pal(cx);
+    let open = OPEN_COMMENTS.with(|o| o.borrow().contains(&id));
+    let short = clamp_text(&c.text, CLAMP_LINES, CLAMP_CHARS);
+    let long = short.is_some();
+    let text = if open { c.text.clone() } else { short.unwrap_or_else(|| c.text.clone()) };
+    let toggle_id = id.clone();
     div()
         .flex()
         .flex_col()
         .gap_2()
-        .child(rich_text_with(id.clone(), c.text.clone(), &c.emojis, cx))
+        .child(rich_text_with(id.clone(), text, &c.emojis, cx))
+        .when(long, |d| {
+            d.child(
+                div()
+                    .id(SharedString::from(format!("{id}-more")))
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.text2)
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(p.text))
+                    .child(if open { "Show less" } else { "Read more" })
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        OPEN_COMMENTS.with(|o| {
+                            let mut o = o.borrow_mut();
+                            if !o.remove(&toggle_id) {
+                                o.insert(toggle_id.clone());
+                            }
+                        });
+                        window.refresh();
+                    }),
+            )
+        })
         .when_some(c.image.clone(), |d, (url, ratio)| {
             // at most 200px tall and 240px wide, aspect kept
             let h = (240.0 / ratio).min(200.0);
             let w = h * ratio;
-            d.child(img(SharedUri::from(url)).w(px(w)).h(px(h)).rounded_lg().object_fit(ObjectFit::Contain))
+            // the id gives the image the per-element state gpui keeps the
+            // animation frame in; without one a GIF only ever shows its first frame
+            d.child(img(SharedUri::from(url)).id(SharedString::from(format!("{id}-img"))).w(px(w)).h(px(h)).rounded_lg().object_fit(ObjectFit::Contain))
         })
         .into_any_element()
+}
+
+#[cfg(test)]
+mod clamp_tests {
+    use super::clamp_text;
+    #[test]
+    fn clamps() {
+        assert_eq!(clamp_text("short", 5, 400), None);
+        assert_eq!(clamp_text("a
+b
+c", 2, 400).as_deref(), Some("a
+b…"));
+        let long = "word ".repeat(200);
+        let c = clamp_text(&long, 5, 400).unwrap();
+        assert!(c.chars().count() <= 401 && c.ends_with("word…"));
+        // multi-byte text is cut on a char boundary
+        assert!(clamp_text(&"é".repeat(500), 5, 400).is_some());
+    }
 }
 
 /// First timestamp ("1:23", "1:02:03") mentioned in a text, in seconds.

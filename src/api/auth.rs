@@ -270,6 +270,13 @@ fn fill_avatars(page: &mut Page) {
         });
         if !found.is_empty() {
             let mut c = cache.lock();
+            // kept across launches, so bounded
+            if c.len() > 5000 {
+                c.retain(|k, v| k.starts_with("id:") && !v.is_empty());
+                if c.len() > 5000 {
+                    c.clear();
+                }
+            }
             c.extend(found);
             if let Ok(s) = serde_json::to_string(&*c) {
                 crate::store::kv_set("channel_avatar_cache", &s);

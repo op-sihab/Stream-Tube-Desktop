@@ -33,6 +33,8 @@ pub struct WatchPage {
     playlist_id: Option<String>,
     info: Load<WatchInfo>,
     votes: Option<Votes>,
+    /// the like state when the counts were fetched, already part of them
+    counted_rating: i8,
     desc_expanded: bool,
     comments: Option<Load<CommentPage>>,
     comments_more_loading: bool,
@@ -49,7 +51,33 @@ pub struct WatchPage {
     scroll: ScrollHandle,
     local_playlist: Option<(i64, String, Vec<VideoItem>)>,
     chat: Option<LiveChat>,
+    /// repaints the chapters panel when playback moves into another chapter
+    chapters_ticker: Option<Task<()>>,
+    chapters_shown: Option<usize>,
     _sub: Subscription,
+}
+
+/// The chapters panel beside the player is open (toggled from the player's
+/// chapter title or the description; closed again for each new video).
+static CHAPTERS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn toggle_chapters(cx: &mut App) {
+    CHAPTERS_OPEN.fetch_xor(true, std::sync::atomic::Ordering::SeqCst);
+    cx.refresh_windows();
+}
+
+fn chapters_open() -> bool {
+    CHAPTERS_OPEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Seeks to a chapter or timestamp and brings the player back into view.
+fn jump_to(t: f64, window: &mut Window, cx: &mut App) {
+    player(cx).update(cx, |p, cx| {
+        p.seek_to(t);
+        p.set_paused(false);
+        cx.notify();
+    });
+    scroll_page_key("home", false, window);
 }
 
 impl WatchPage {
@@ -93,6 +121,7 @@ impl WatchPage {
             playlist_id,
             info: Load::Loading,
             votes: None,
+            counted_rating: 0,
             desc_expanded: false,
             comments: None,
             comments_more_loading: false,
@@ -105,8 +134,11 @@ impl WatchPage {
             scroll: ScrollHandle::new(),
             local_playlist,
             chat: None,
+            chapters_ticker: None,
+            chapters_shown: None,
             _sub: sub,
         };
+        CHAPTERS_OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
         s.make_chat(window, cx);
         s.load(cx);
         s
@@ -342,7 +374,7 @@ impl WatchPage {
                     }
                 })))
             });
-        panel = panel.child(list).child(input_row);
+        panel = panel.child(nested_scroll("chat-wrap", list)).child(input_row);
         Some(panel.into_any_element())
     }
 
@@ -358,6 +390,7 @@ impl WatchPage {
             let (info, votes) = futures::join!(info_f, votes_f);
             let _ = this.update(cx, |this, cx| {
                 this.votes = votes;
+                this.counted_rating = store::rating(&this.id);
                 match info {
                     Ok(w) => {
                         let s = store::settings_snapshot();
@@ -596,14 +629,19 @@ impl WatchPage {
         let s = store::settings_snapshot();
         let subscribed = store::is_subscribed(&w.channel.id);
         let rating = store::rating(&w.id);
-        let likes = self
-            .votes
-            .as_ref()
-            .map(|v| compact_number(v.likes + (rating == 1) as u64))
-            .or(w.likes_text.clone())
+        // the fetched counts already hold the vote made before they were fetched;
+        // move them by whatever changed since, shown exactly so a vote is visible
+        let shift = |n: u64, was: bool, now: bool| (n + now as u64).saturating_sub(was as u64);
+        let was = self.counted_rating;
+        let base_likes = self.votes.as_ref().map(|v| v.likes).or_else(|| w.likes_text.as_deref().and_then(crate::api::json::parse_count));
+        let like_n = base_likes.map(|n| shift(n, was == 1, rating == 1));
+        let dislike_n = self.votes.as_ref().map(|v| shift(v.dislikes, was == -1, rating == -1));
+        let likes = like_n
+            .map(vote_count)
+            .or_else(|| w.likes_text.clone().filter(|t| !t.chars().any(|c| c.is_ascii_digit())))
             .unwrap_or_else(|| "Like".into());
-        let dislikes = self.votes.as_ref().map(|v| compact_number(v.dislikes));
-        let ratio = self.votes.as_ref().filter(|v| v.likes + v.dislikes > 0).map(|v| v.likes as f32 / (v.likes + v.dislikes) as f32);
+        let dislikes = dislike_n.map(vote_count);
+        let ratio = like_n.zip(dislike_n).filter(|(l, d)| l + d > 0).map(|(l, d)| l as f32 / (l + d) as f32);
         let video_item = player(cx).read(cx).video.clone().unwrap_or_else(|| VideoItem { id: w.id.clone(), title: w.title.clone(), ..Default::default() });
         let cid = w.channel.id.clone();
         let title = if s.dearrow_titles {
@@ -783,7 +821,32 @@ impl WatchPage {
                         .flex_col()
                         .gap_2()
                         .pt_3()
-                        .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Chapters"))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Chapters"))
+                                .child(
+                                    div()
+                                        .id("chap-all")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_full()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(p.link)
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(p.hover))
+                                        .child("View all")
+                                        .on_click(|_, window, cx| {
+                                            cx.stop_propagation();
+                                            CHAPTERS_OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
+                                            scroll_page_key("home", false, window);
+                                            cx.refresh_windows();
+                                        }),
+                                ),
+                        )
                         .child(div().flex().gap_2().overflow_hidden().children(chapters.into_iter().enumerate().map(|(i, c)| {
                             let t = c.start;
                             div()
@@ -800,7 +863,10 @@ impl WatchPage {
                                 .when_some(c.thumbnail.clone(), |d, th| d.child(img(SharedString::from(th)).w(px(152.)).h(px(86.)).rounded_md()))
                                 .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(p.text).line_clamp(2).child(c.title.clone()))
                                 .child(div().text_xs().text_color(p.link).child(crate::api::json::format_duration(t as u64)))
-                                .on_click(move |_, _, cx| player(cx).update(cx, |p, _| p.seek_to(t)))
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    jump_to(t, window, cx)
+                                })
                         }))),
                 )
             })
@@ -1091,6 +1157,114 @@ impl WatchPage {
         col.into_any_element()
     }
 
+    /// YouTube's "In this video" panel: every chapter, the one playing marked,
+    /// each a click away.
+    fn render_chapters_panel(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (chapters, now) = {
+            let r = player(cx).read(cx);
+            (r.chapters.clone(), r.time)
+        };
+        if !chapters_open() || chapters.len() < 2 || store::settings_snapshot().hide_chapters {
+            self.chapters_ticker = None;
+            return None;
+        }
+        let current = chapters.iter().rposition(|c| c.start <= now + 0.01);
+        self.chapters_shown = current;
+        if self.chapters_ticker.is_none() {
+            self.chapters_ticker = Some(cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+                let alive = this.update(cx, |this, cx| {
+                    let r = player(cx).read(cx);
+                    let cur = r.chapters.iter().rposition(|c| c.start <= r.time + 0.01);
+                    if cur != this.chapters_shown {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }));
+        }
+        let p = pal(cx);
+        let mut list = div().id("chapters-list").flex().flex_col().max_h(px(480.)).overflow_y_scroll().py_1();
+        for (i, c) in chapters.iter().enumerate() {
+            let t = c.start;
+            let active = current == Some(i);
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("chp-{i}")))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .when(active, |d| d.bg(p.hover))
+                    .hover(move |s| s.bg(p.hover))
+                    .child(match c.thumbnail.clone() {
+                        Some(th) => img(SharedString::from(th)).w(px(112.)).h(px(63.)).flex_none().rounded_md().into_any_element(),
+                        None => div()
+                            .w(px(28.))
+                            .flex_none()
+                            .text_sm()
+                            .text_center()
+                            .text_color(if active { p.accent } else { p.text2 })
+                            .child(if active { "▶".to_string() } else { (i + 1).to_string() })
+                            .into_any_element(),
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(p.text).line_clamp(2).child(c.title.clone()))
+                            .child(
+                                div()
+                                    .w_auto()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.link)
+                                    .child(crate::api::json::format_duration(t as u64)),
+                            ),
+                    )
+                    .on_click(move |_, window, cx| jump_to(t, window, cx)),
+            );
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .rounded_xl()
+                .border_1()
+                .border_color(p.border)
+                .overflow_hidden()
+                .mb_4()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .p_3()
+                        .bg(p.surface)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(div().text_base().font_weight(FontWeight::BOLD).text_color(p.text).child("Chapters"))
+                                .child(div().text_xs().text_color(p.text2).child(format!("{} / {}", current.map(|c| c + 1).unwrap_or(0), chapters.len()))),
+                        )
+                        .child(icon_button("chp-close", "x", cx).on_click(|_, _, cx| {
+                            CHAPTERS_OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
+                            cx.refresh_windows();
+                        })),
+                )
+                .child(nested_scroll("chapters-wrap", list))
+                .into_any_element(),
+        )
+    }
+
     fn render_queue_panel(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = pal(cx);
         let pl = player(cx);
@@ -1172,7 +1346,7 @@ impl WatchPage {
                                 })),
                         ),
                 )
-                .child(list)
+                .child(nested_scroll("queue-wrap", list))
                 .into_any_element(),
         )
     }
@@ -1310,6 +1484,7 @@ impl Render for WatchPage {
             (Load::Error(e), _) => div().py_4().text_color(p.text2).child(format!("Could not load video details: {e}")).into_any_element(),
             _ => watch_details_skeleton(cx),
         };
+        let chapters_panel = self.render_chapters_panel(cx);
         let queue_panel = self.render_queue_panel(cx);
         let chat_panel = self.render_chat(cx);
         let related = match info.as_ref() {
@@ -1317,7 +1492,15 @@ impl Render for WatchPage {
             None if matches!(self.info, Load::Loading) => Some(related_skeleton_list(8, cx).into_any_element()),
             None => None,
         };
-        let secondary = div().flex().flex_col().w(if two_col { side_w } else { avail }).flex_none().children(chat_panel).children(queue_panel).children(related);
+        let secondary = div()
+            .flex()
+            .flex_col()
+            .w(if two_col { side_w } else { avail })
+            .flex_none()
+            .children(chapters_panel)
+            .children(chat_panel)
+            .children(queue_panel)
+            .children(related);
         // ambient mode: a soft glow in the picture's colours around the player
         let glow = (!ui.theater && store::settings_snapshot().ambient_mode)
             .then(|| crate::player::controller::player(cx).read(cx).ambient)
@@ -1366,6 +1549,23 @@ impl Render for WatchPage {
         };
         page_scroll("watch-scroll", &self.scroll).child(body).into_any_element()
     }
+}
+
+/// A like or dislike count, exact below a million (with separators) so that
+/// voting visibly moves it.
+fn vote_count(n: u64) -> String {
+    if n >= 1_000_000 {
+        return compact_number(n);
+    }
+    let d = n.to_string();
+    let mut out = String::new();
+    for (i, c) in d.chars().enumerate() {
+        if i > 0 && (d.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Likes / dislikes a video locally and on the signed-in account.

@@ -231,10 +231,70 @@ impl Default for Settings {
 fn settings_lock() -> &'static RwLock<Arc<Settings>> {
     static S: OnceLock<RwLock<Arc<Settings>>> = OnceLock::new();
     S.get_or_init(|| {
-        let mut s: Settings = load_setting_json("settings").unwrap_or_default();
+        let mut s = load_settings();
         normalize_settings(&mut s);
         RwLock::new(Arc::new(s))
     })
+}
+
+fn settings_file() -> PathBuf {
+    data_dir().join("settings.json")
+}
+
+/// Settings live in settings.json (written atomically) and are mirrored into the
+/// database. The file is read first, so a damaged or replaced database never
+/// takes the settings with it, and a field that no longer parses (a type changed
+/// between versions) only resets that one field instead of all of them.
+fn load_settings() -> Settings {
+    let from_file = std::fs::read_to_string(settings_file())
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(|v| v.is_object());
+    let raw = from_file.or_else(|| {
+        load_setting_json::<serde_json::Value>("settings").map(|v| match v {
+            serde_json::Value::String(t) => serde_json::from_str(&t).unwrap_or(serde_json::Value::Null),
+            v => v,
+        })
+    });
+    let Some(raw) = raw else { return Settings::default() };
+    let s = settings_from_value(raw);
+    // the file is the copy that survives; write it the first time
+    if !settings_file().exists() {
+        let _ = write_settings_file(&s);
+    }
+    s
+}
+
+/// Builds settings from stored JSON, keeping every field that parses.
+pub(crate) fn settings_from_value(raw: serde_json::Value) -> Settings {
+    if let Ok(s) = serde_json::from_value::<Settings>(raw.clone()) {
+        return s;
+    }
+    let serde_json::Value::Object(stored) = raw else { return Settings::default() };
+    let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(Settings::default()) else {
+        return Settings::default();
+    };
+    for (k, v) in stored {
+        if !merged.contains_key(&k) {
+            continue;
+        }
+        let prev = merged.insert(k.clone(), v);
+        if serde_json::from_value::<Settings>(serde_json::Value::Object(merged.clone())).is_err() {
+            // this field doesn't fit the current type: keep the default
+            if let Some(p) = prev {
+                merged.insert(k, p);
+            }
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_default()
+}
+
+fn write_settings_file(s: &Settings) -> Result<()> {
+    let path = settings_file();
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 fn normalize_settings(s: &mut Settings) {
@@ -256,8 +316,13 @@ pub fn settings_snapshot() -> Arc<Settings> {
 }
 
 pub fn update_settings(f: impl FnOnce(&mut Settings)) {
+    // one writer at a time, so two quick changes from different threads
+    // can't both start from the same old copy and drop one of them
+    static WRITE: Mutex<()> = Mutex::new(());
+    let _w = WRITE.lock();
     let mut s = (*settings_snapshot()).clone();
     f(&mut s);
+    let _ = write_settings_file(&s);
     let _ = save_setting_json("settings", &s);
     *settings_lock().write() = Arc::new(s);
 }
@@ -286,6 +351,13 @@ pub fn data_dir() -> PathBuf {
             let _ = std::fs::create_dir_all(&d);
             return d;
         }
+        // tests never touch the real profile
+        #[cfg(test)]
+        {
+            let d = std::env::temp_dir().join(format!("streamtube-test-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&d);
+            return d;
+        }
         let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
         let d = base.join("StreamTube");
         // carry over data from the app's previous name
@@ -294,6 +366,13 @@ pub fn data_dir() -> PathBuf {
             let _ = std::fs::rename(&old, &d);
         }
         let _ = std::fs::create_dir_all(&d);
+        // A -wal/-shm left without its database belongs to some other copy of it;
+        // SQLite would replay it onto whatever database is put there next and
+        // damage it, so drop it before anything opens the database.
+        if !d.join("streamtube.db").exists() {
+            let _ = std::fs::remove_file(d.join("streamtube.db-wal"));
+            let _ = std::fs::remove_file(d.join("streamtube.db-shm"));
+        }
         if !d.join("streamtube.db").exists() && d.join("ferrotube.db").exists() {
             for ext in ["", "-wal", "-shm"] {
                 let _ = std::fs::rename(d.join(format!("ferrotube.db{ext}")), d.join(format!("streamtube.db{ext}")));
@@ -304,24 +383,110 @@ pub fn data_dir() -> PathBuf {
     .clone()
 }
 
+const TABLES: &str = "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+     CREATE TABLE IF NOT EXISTS subscriptions (channel_id TEXT PRIMARY KEY, name TEXT NOT NULL, avatar TEXT, added_at INTEGER NOT NULL);
+     CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color INTEGER NOT NULL);
+     CREATE TABLE IF NOT EXISTS profile_channels (profile_id INTEGER NOT NULL, channel_id TEXT NOT NULL, PRIMARY KEY(profile_id, channel_id));
+     CREATE TABLE IF NOT EXISTS history (video_id TEXT PRIMARY KEY, json TEXT NOT NULL, watched_at INTEGER NOT NULL, progress REAL NOT NULL DEFAULT 0, duration REAL NOT NULL DEFAULT 0);
+     CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at INTEGER NOT NULL, protected INTEGER NOT NULL DEFAULT 0, yt_id TEXT);
+     CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER NOT NULL, video_id TEXT NOT NULL, json TEXT NOT NULL, added_at INTEGER NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(playlist_id, video_id));
+     CREATE TABLE IF NOT EXISTS search_history (query TEXT PRIMARY KEY, at INTEGER NOT NULL);
+     CREATE TABLE IF NOT EXISTS feed_cache (channel_id TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_at INTEGER NOT NULL);
+     CREATE TABLE IF NOT EXISTS channel_speed (channel_id TEXT PRIMARY KEY, speed REAL NOT NULL);
+     CREATE TABLE IF NOT EXISTS saved_playlists (playlist_id TEXT PRIMARY KEY, json TEXT NOT NULL, added_at INTEGER NOT NULL);";
+
+/// Opens the database and checks it. A damaged one (its pages no longer agree
+/// with each other, so lookups can return another row's data) is rebuilt from
+/// every row that can still be read, and the damaged file is kept beside it.
+fn open_checked(path: &std::path::Path) -> Connection {
+    let conn = Connection::open(path).expect("open db");
+    let ok = conn
+        .query_row("PRAGMA quick_check(1)", [], |r| r.get::<_, String>(0))
+        .map(|r| r == "ok")
+        .unwrap_or(false);
+    if ok {
+        return conn;
+    }
+    eprintln!("streamtube: the database failed its check, rebuilding it");
+    let fresh = path.with_extension("db.rebuild");
+    let _ = std::fs::remove_file(&fresh);
+    if rebuild_into(&conn, &fresh).is_err() {
+        let _ = std::fs::remove_file(&fresh);
+        return conn;
+    }
+    drop(conn);
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let damaged = path.with_extension(format!("db.damaged-{stamp}"));
+    if std::fs::rename(path, &damaged).is_err() {
+        let _ = std::fs::remove_file(&fresh);
+        return Connection::open(path).expect("open db");
+    }
+    for ext in ["-wal", "-shm"] {
+        let from = PathBuf::from(format!("{}{ext}", path.display()));
+        let _ = std::fs::rename(&from, PathBuf::from(format!("{}{ext}", damaged.display())));
+    }
+    let _ = std::fs::rename(&fresh, path);
+    Connection::open(path).expect("open db")
+}
+
+fn rebuild_into(old: &Connection, fresh: &std::path::Path) -> Result<()> {
+    let new = Connection::open(fresh)?;
+    new.execute_batch(TABLES)?;
+    let tables: Vec<String> = {
+        let mut st = new.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")?;
+        st.query_map([], |r| r.get(0))?.filter_map(Result::ok).collect()
+    };
+    new.execute_batch("BEGIN")?;
+    for t in tables {
+        let Ok(st) = old.prepare(&format!("SELECT * FROM \"{t}\" LIMIT 0")) else { continue };
+        let n = st.column_count();
+        let cols: Vec<String> = st.column_names().map(|c| format!("\"{c}\"")).collect();
+        drop(st);
+        let marks = vec!["?"; n].join(",");
+        let insert = format!("INSERT OR IGNORE INTO \"{t}\"({}) VALUES ({marks})", cols.join(","));
+        // Walk the table itself in rowid order (not an index: a damaged index points
+        // keys at the wrong rows). When a page can't be read, start again a little
+        // past the last good row, so one bad page doesn't lose everything after it.
+        let select = format!("SELECT rowid, * FROM \"{t}\" NOT INDEXED WHERE rowid > ?1 ORDER BY rowid");
+        let mut after = i64::MIN;
+        let mut skip = 1i64;
+        let mut tries = 0;
+        while tries < 64 {
+            let Ok(mut st) = old.prepare(&select) else { break };
+            let Ok(mut rows) = st.query([after]) else { break };
+            let mut progressed = false;
+            let finished = loop {
+                match rows.next() {
+                    Ok(Some(r)) => {
+                        let Ok(id) = r.get::<_, i64>(0) else { continue };
+                        after = id;
+                        progressed = true;
+                        let vals: Vec<rusqlite::types::Value> =
+                            (1..=n).map(|i| r.get(i).unwrap_or(rusqlite::types::Value::Null)).collect();
+                        let _ = new.execute(&insert, rusqlite::params_from_iter(vals));
+                    }
+                    Ok(None) => break true,
+                    Err(_) => break false,
+                }
+            };
+            if finished {
+                break;
+            }
+            // jump over the unreadable part, further each time it fails again
+            skip = if progressed { 1 } else { skip.saturating_mul(4) };
+            after = after.saturating_add(skip);
+            tries += 1;
+        }
+    }
+    new.execute_batch("COMMIT")?;
+    Ok(())
+}
+
 fn db() -> &'static Mutex<Connection> {
     static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
     DB.get_or_init(|| {
-        let conn = Connection::open(data_dir().join("streamtube.db")).expect("open db");
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS subscriptions (channel_id TEXT PRIMARY KEY, name TEXT NOT NULL, avatar TEXT, added_at INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS profile_channels (profile_id INTEGER NOT NULL, channel_id TEXT NOT NULL, PRIMARY KEY(profile_id, channel_id));
-             CREATE TABLE IF NOT EXISTS history (video_id TEXT PRIMARY KEY, json TEXT NOT NULL, watched_at INTEGER NOT NULL, progress REAL NOT NULL DEFAULT 0, duration REAL NOT NULL DEFAULT 0);
-             CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at INTEGER NOT NULL, protected INTEGER NOT NULL DEFAULT 0, yt_id TEXT);
-             CREATE TABLE IF NOT EXISTS playlist_items (playlist_id INTEGER NOT NULL, video_id TEXT NOT NULL, json TEXT NOT NULL, added_at INTEGER NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(playlist_id, video_id));
-             CREATE TABLE IF NOT EXISTS search_history (query TEXT PRIMARY KEY, at INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS feed_cache (channel_id TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_at INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS channel_speed (channel_id TEXT PRIMARY KEY, speed REAL NOT NULL);
-             CREATE TABLE IF NOT EXISTS saved_playlists (playlist_id TEXT PRIMARY KEY, json TEXT NOT NULL, added_at INTEGER NOT NULL);",
-        )
+        let conn = open_checked(&data_dir().join("streamtube.db"));
+        conn.execute_batch(&format!("PRAGMA journal_mode=WAL; {TABLES}"))
         .expect("init db");
         // built-in playlists
         let n: i64 = conn
@@ -823,4 +988,59 @@ pub fn rating(video_id: &str) -> i8 {
 
 pub fn set_rating(video_id: &str, r: i8) {
     kv_set(&format!("rating:{video_id}"), &r.to_string());
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn a_bad_field_keeps_the_others() {
+        let raw = serde_json::json!({
+            "hide_shorts": true,
+            "blocked_keywords": ["spoiler"],
+            "sb_actions": { "sponsor": "ask" },
+            // wrong type, e.g. from another version
+            "default_quality": "high",
+            "not_a_setting": 1
+        });
+        let s = settings_from_value(raw);
+        assert!(s.hide_shorts);
+        assert_eq!(s.blocked_keywords, vec!["spoiler".to_string()]);
+        assert_eq!(s.sb_actions.get("sponsor").map(String::as_str), Some("ask"));
+        assert_eq!(s.default_quality, Settings::default().default_quality);
+    }
+
+    #[test]
+    fn damaged_database_is_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("st-rebuild-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("streamtube.db");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(TABLES).unwrap();
+            for i in 0..300 {
+                c.execute("INSERT INTO kv VALUES (?1, ?2)", params![format!("k{i}"), "x".repeat(200)]).unwrap();
+            }
+            c.execute("INSERT INTO subscriptions VALUES ('UC1', 'One', NULL, 1)", []).unwrap();
+        }
+        // scribble over a page in the middle of the file, as a damaged write would
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            // the header of a page in the middle of the kv table
+            f.seek(SeekFrom::Start(4096 * 6)).unwrap();
+            f.write_all(&[0xAB; 64]).unwrap();
+        }
+        let c = open_checked(&path);
+        let ok: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(ok, "ok");
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0)).unwrap();
+        assert!(n > 100, "kept {n} rows");
+        let damaged = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().contains("damaged"));
+        assert!(damaged, "the damaged file is kept");
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

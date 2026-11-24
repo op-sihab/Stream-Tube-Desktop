@@ -53,7 +53,10 @@ pub fn branded(v: &VideoItem, cx: &mut App) -> (String, String) {
             let id = v.id.clone();
             if pending().lock().insert(id.clone()) {
                 cx.spawn(async move |cx| {
-                    blocking(move || crate::api::services::dearrow_branding(&id)).await;
+                    let id2 = id.clone();
+                    blocking(move || crate::api::services::dearrow_branding(&id2)).await;
+                    // cached now; dropping the mark lets it be looked up again if the cache is trimmed
+                    pending().lock().remove(&id);
                     let _ = cx.update(|cx| cx.refresh_windows());
                 })
                 .detach();

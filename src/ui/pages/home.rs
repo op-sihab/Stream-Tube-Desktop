@@ -61,6 +61,72 @@ fn save_home(items: &[Item]) {
     store::kv_set("home_cache", &v.to_string());
 }
 
+/// The "Recently uploaded" chip (after All and the Explore categories).
+const RECENT: usize = usize::MAX;
+/// How far back "Recently uploaded" reaches.
+const RECENT_DAYS: i64 = 14;
+
+/// Videos from the Home feed and the subscriptions uploaded in the last two
+/// weeks, newest first, like youtube.com's "Recently uploaded" chip.
+fn recently_uploaded() -> anyhow::Result<Vec<Item>> {
+    let mut videos: Vec<VideoItem> = Vec::new();
+    let mut add = |p: anyhow::Result<Page>| {
+        if let Ok(p) = p {
+            videos.extend(p.items.into_iter().filter_map(|i| if let Item::Video(v) = i { Some(v) } else { None }));
+        }
+    };
+    // the personal Home feed, two pages of it, from whichever sign-in there is
+    if crate::api::web::connected() {
+        let first = crate::api::web::home();
+        let next = first.as_ref().ok().and_then(|p| p.continuation.clone());
+        add(first);
+        if let Some(t) = next {
+            add(crate::api::web::browse_continue(&t));
+        }
+    } else if crate::api::auth::signed_in() {
+        let first = crate::api::auth::home();
+        let next = first.as_ref().ok().and_then(|p| p.continuation.clone());
+        add(first);
+        if let Some(t) = next {
+            add(crate::api::auth::browse_continue(&t));
+        }
+    } else if crate::recommend::available() {
+        add(Ok(Page { items: crate::recommend::for_you(), continuation: None }));
+    }
+    // new uploads from the subscriptions
+    if crate::api::auth::signed_in() {
+        add(crate::api::auth::subscriptions_feed());
+    }
+    if !store::subscriptions().is_empty() {
+        let (feed, _) = crate::feed::cached_feed(None);
+        videos.extend(feed.into_iter().take(150));
+    }
+    let since = crate::api::json::now() - RECENT_DAYS * 86400;
+    let mut seen = std::collections::HashSet::new();
+    let mut recent: Vec<(i64, VideoItem)> = videos
+        .into_iter()
+        .filter(|v| !v.is_short && !v.is_upcoming && !v.is_live)
+        .filter_map(|v| {
+            let ts = v.published_ts.or_else(|| v.published_text.as_deref().and_then(crate::api::json::parse_relative_time))?;
+            (ts >= since && seen.insert(v.id.clone())).then_some((ts, v))
+        })
+        .collect();
+    if recent.is_empty() {
+        anyhow::bail!("No videos from the last {RECENT_DAYS} days in your feed yet. Sign in or subscribe to some channels to fill this up.");
+    }
+    recent.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(recent
+        .into_iter()
+        .take(120)
+        .map(|(ts, mut v)| {
+            // a saved feed keeps the "2 days ago" it was fetched with; say it from
+            // the upload time instead, so the dates match the order
+            v.published_text = Some(crate::api::json::relative_from_ts(ts));
+            Item::Video(v)
+        })
+        .collect())
+}
+
 /// Only the first home load of a session starts from the cache.
 static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -112,19 +178,10 @@ impl HomePage {
                         std::thread::sleep(std::time::Duration::from_millis(400));
                         crate::api::auth::home().ok()
                     });
-                    if let Some(mut p) = home {
+                    if let Some(p) = home {
                         if !p.items.is_empty() {
-                            // a second page gives a refresh more to choose from
-                            if let Some(c) = p.continuation.take() {
-                                match crate::api::auth::browse_continue(&c) {
-                                    Ok(more) => {
-                                        let have: std::collections::HashSet<String> = p.items.iter().filter_map(|i| i.as_video().map(|v| v.id.clone())).collect();
-                                        p.items.extend(more.items.into_iter().filter(|i| i.as_video().map(|v| !have.contains(&v.id)).unwrap_or(true)));
-                                        p.continuation = more.continuation;
-                                    }
-                                    Err(_) => p.continuation = Some(c),
-                                }
-                            }
+                            // shown as soon as the first page is in; the next page loads
+                            // when scrolling, instead of making the start wait for it
                             return Ok((freshen(p.items), p.continuation.map(|c| format!("{ACCOUNT}{c}"))));
                         }
                     }
@@ -149,6 +206,9 @@ impl HomePage {
                         return Ok((freshen(picks), None));
                     }
                 }
+                if chip == RECENT {
+                    return Ok((recently_uploaded()?, None));
+                }
                 if chip == 0 {
                     let subs = store::subscriptions();
                     if !subs.is_empty() {
@@ -157,22 +217,9 @@ impl HomePage {
                         if feed.is_empty() || stale {
                             feed = crate::feed::refresh(None, |_, _| {}).0;
                         }
-                        // mix in some popular music & gaming for variety
-                        let mut items: Vec<Item> = feed.into_iter().take(80).map(Item::Video).collect();
-                        if let Ok(p) = innertube::explore(EXPLORE[0].1) {
-                            let extra: Vec<Item> = p.items.into_iter().filter(|i| matches!(i, Item::Video(_))).take(12).collect();
-                            let mut out = Vec::new();
-                            let mut ex = extra.into_iter();
-                            for (i, it) in items.drain(..).enumerate() {
-                                out.push(it);
-                                if i % 8 == 7 {
-                                    if let Some(e) = ex.next() {
-                                        out.push(e);
-                                    }
-                                }
-                            }
-                            items = out;
-                        }
+                        // only the subscriptions: popular videos from unrelated channels mixed
+                        // in here read as random videos in the feed
+                        let items: Vec<Item> = feed.into_iter().take(80).map(Item::Video).collect();
                         return Ok((freshen(items), None));
                     }
                     // no subscriptions: popular from several categories, interleaved
@@ -302,6 +349,10 @@ impl Render for HomePage {
                     this.load(cx);
                 })),
         );
+        chips = chips.child(chip("chip-recent", "Recently uploaded", self.chip == RECENT, cx).on_click(cx.listener(|this, _, _, cx| {
+            this.chip = RECENT;
+            this.load(cx);
+        })));
         if !s.hide_explore {
             for (i, (name, _)) in EXPLORE.iter().enumerate() {
                 chips = chips.child(chip(SharedString::from(format!("chip-{i}")), *name, self.chip == i + 1, cx).on_click(cx.listener(

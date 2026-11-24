@@ -140,7 +140,15 @@ pub fn dearrow_branding(video_id: &str) -> Option<Branding> {
             .and_then(|x| x.get("timestamp").and_then(Value::as_f64));
         Some(Branding { title, thumbnail_time })
     });
-    branding_cache().lock().insert(video_id.to_string(), res.clone());
+    {
+        let mut c = branding_cache().lock();
+        // one entry per video ever shown; start over now and then so a long
+        // session doesn't keep growing
+        if c.len() > 4000 {
+            c.clear();
+        }
+        c.insert(video_id.to_string(), res.clone());
+    }
     res
 }
 

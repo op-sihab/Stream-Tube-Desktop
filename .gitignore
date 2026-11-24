@@ -12,3 +12,6 @@ Thumbs.db
 
 # installers and packages
 /dist/
+
+# built in CI from the Khronos Vulkan-Loader sources
+/third_party/vulkan/

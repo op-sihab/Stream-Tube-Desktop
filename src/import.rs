@@ -151,7 +151,9 @@ fn import_json_value(v: &Value, rep: &mut ImportReport) -> Result<()> {
             }
         }
         if let Some(s) = v.get("settings") {
-            if let Ok(st) = serde_json::from_value::<store::Settings>(s.clone()) {
+            if s.is_object() {
+                // a backup from another version keeps every setting that still fits
+                let st = store::settings_from_value(s.clone());
                 store::update_settings(|cur| *cur = st);
             }
         }
